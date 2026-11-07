@@ -1,0 +1,355 @@
+
+---
+title: "Linear Regression: Model Specification, Comparison, and Interpretation"
+author: "Yiyao Wang"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: show
+    code-tools: true
+    embed-resources: true
+    theme: cosmo
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## Purpose
+
+This report demonstrates a complete linear regression workflow:
+
+**Explore Data → Specify Models → Estimate Models → Compare Models → Evaluate Assumptions → Select a Model → Interpret Results**
+
+## 1. Load packages and prepare the data
+
+```{r}
+#| label: setup
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(broom)
+library(performance)
+library(gt)
+
+data("attitude")
+
+attitude_data <- attitude %>%
+  select(rating, complaints, learning, raises)
+
+head(attitude_data)
+nrow(attitude_data)
+```
+
+
+## 2. Explore the data
+
+Overall workplace ratings ranged from 40 to 85, with most departments scoring between approximately 60 and 75 and a few reporting lower ratings. Both complaint handling and learning opportunities showed positive, approximately linear relationships with workplace ratings, although the relationship appeared stronger for complaint handling. Some departments had ratings noticeably above or below the fitted lines, particularly for learning opportunities, but no points appeared clearly isolated from the rest. These patterns are consistent with the expectation that better complaint handling and greater learning opportunities are associated with higher workplace ratings.
+
+```{r}
+#| label: descriptive-table
+#| tbl-cap: "Descriptive statistics for continuous variables"
+
+head(attitude_data)
+str(attitude_data)
+summary(attitude_data)
+
+
+descriptives <- attitude_data %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Variable",
+    values_to = "Value"
+  ) %>%
+  group_by(Variable) %>%
+  summarise(
+    Mean = mean(Value),
+    SD = sd(Value),
+    Minimum = min(Value),
+    Maximum = max(Value),
+    .groups = "drop"
+  )
+
+descriptives %>%
+  gt() %>%
+  fmt_number(
+    columns = c(Mean, SD, Minimum, Maximum),
+    decimals = 2
+  )
+
+ggplot(attitude_data, aes(x = rating)) +
+  geom_histogram(
+    aes(y = after_stat(density)),
+    bins = 8,
+    fill = "skyblue",
+    color = "white"
+  ) +
+  geom_density(color = "red", linewidth = 1) +
+  labs(
+    title = "Distribution of Workplace Ratings",
+    x = "Overall Workplace Rating",
+    y = "Density"
+  ) +
+  theme_minimal()
+
+
+ggplot(attitude_data,
+       aes(x = complaints, y = rating)) +
+  geom_point(color = "steelblue", size = 3) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "Complaint Handling and Workplace Ratings",
+    x = "Complaint Handling",
+    y = "Overall Workplace Rating"
+  ) +
+  theme_minimal()
+
+ggplot(attitude_data,
+       aes(x = learning, y = rating)) +
+  geom_point(color = "steelblue", size = 3) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "Learning Opportunities and Workplace Ratings",
+    x = "Learning Opportunities",
+    y = "Overall Workplace Rating"
+  ) +
+  theme_minimal()
+```
+
+
+## 3. Specify and estimate competing models
+
+We expect that better handling of employee complaints will be positively associated with overall workplace ratings, as effective complaint resolution may improve employees' perceptions of management. Additionally, opportunities for learning may contribute to higher workplace ratings by supporting professional development. Finally, pay increases may explain additional variation in workplace ratings, as financial rewards could contribute to employee satisfaction.
+
+
+```{r}
+#| label: fit-models
+
+# M0: Null model
+m0 <- lm(rating ~ 1, data = attitude_data)
+
+# M1: Complaints only
+m1 <- lm(rating ~ complaints, data = attitude_data)
+
+# M2: Complaints + Learning
+m2 <- lm(rating ~ complaints + learning,
+         data = attitude_data)
+
+# M3: Complaints + Learning + Raises
+m3 <- lm(rating ~ complaints + learning + raises,
+         data = attitude_data)
+
+summary(m0)
+summary(m1)
+summary(m2)
+summary(m3)
+```
+
+
+The complaints coefficient remained positive and statistically significant across all three models (all *p* < .001). In M1, a one-unit increase in complaint handling was associated with a 0.755-unit increase in overall workplace ratings. After controlling for learning opportunities in M2, this coefficient decreased to 0.644. In M3, the coefficient increased slightly to 0.653 after additionally controlling for pay increases. These results suggest that complaint handling is a robust predictor of workplace ratings, even after accounting for the other workplace factors.
+
+## 4. Compare Model Performance
+
+```{r}
+
+model_anova <- anova(m0, m1, m2, m3)
+
+model_anova
+
+nested_tests <- as.data.frame(model_anova) %>%
+  mutate(Model = c("M0", "M1", "M2", "M3")) %>%
+  select(Model, Res.Df, Df, F, `Pr(>F)`) %>%
+  rename(
+    Residual_df = Res.Df,
+    Nested_df = Df,
+    Nested_F = F,
+    Nested_p = `Pr(>F)`
+  )
+
+nested_tests
+
+model_performance <- bind_rows(
+  glance(m0) %>%
+    mutate(Model = "M0",
+           RMSE = sqrt(mean(residuals(m0)^2))),
+
+  glance(m1) %>%
+    mutate(Model = "M1",
+           RMSE = sqrt(mean(residuals(m1)^2))),
+
+  glance(m2) %>%
+    mutate(Model = "M2",
+           RMSE = sqrt(mean(residuals(m2)^2))),
+
+  glance(m3) %>%
+    mutate(Model = "M3",
+           RMSE = sqrt(mean(residuals(m3)^2)))
+) %>%
+  select(
+    Model,
+    R2 = r.squared,
+    Adjusted_R2 = adj.r.squared,
+    RMSE
+  )
+
+model_performance
+
+model_performance <- model_performance %>%
+  mutate(
+    Delta_R2 = R2 - lag(R2)
+  )
+
+model_performance
+
+comparison_table <- model_performance %>%
+  left_join(nested_tests, by = "Model")
+
+comparison_table
+
+comparison_table %>%
+  mutate(
+    Nested_p = case_when(
+      is.na(Nested_p) ~ "—",
+      Nested_p < 0.001 ~ "< .001",
+      TRUE ~ sprintf("%.3f", Nested_p)
+    )
+  ) %>%
+  gt() %>%
+  tab_header(
+    title = "Comparison of Linear Regression Models"
+  ) %>%
+  cols_label(
+    Model = "Model",
+    R2 = "R²",
+    Adjusted_R2 = "Adjusted R²",
+    RMSE = "RMSE",
+    Delta_R2 = "ΔR²",
+    Residual_df = "Residual df",
+    Nested_df = "Nested df",
+    Nested_F = "Nested F",
+    Nested_p = "Nested p"
+  ) %>%
+  fmt_number(
+    columns = c(R2, Adjusted_R2, RMSE,
+                Delta_R2, Nested_F),
+    decimals = 3
+  ) %>%
+  fmt_number(
+    columns = c(Residual_df, Nested_df),
+    decimals = 0
+  ) %>%
+  sub_missing(missing_text = "—")
+
+```
+
+Model comparisons revealed that M3 explained the largest proportion of variance in workplace ratings (R² = .708), although M2 had the highest adjusted R² (.686). Adding complaint handling significantly improved model fit compared with the null model (ΔR² = .681, F(1, 28) = 60.73, p < .001). Adding learning opportunities explained an additional 2.67% of variance, but this improvement was not statistically significant (p = .135). Adding pay increases explained virtually no additional variance (ΔR² < .001, p = .876). RMSE decreased substantially from 11.968 in M0 to 6.756 in M1, with a smaller reduction to 6.467 in M2 and a negligible reduction to 6.464 in M3. Overall, complaint handling contributed most strongly to explaining workplace ratings, while learning provided a modest additional improvement and pay increases contributed little. M2 may offer a reasonable balance between explanatory power and model complexity, pending diagnostic evaluation.
+
+
+## 5. Evaluate Regression Diagnostics
+```{r}
+#| fig-width: 10
+#| fig-height: 8
+
+par(mfrow = c(2, 2))
+
+plot(m2)
+
+par(mfrow = c(1, 1))
+
+check_collinearity(m2)
+
+cooks_d <- cooks.distance(m2)
+
+data.frame(
+  Observation = seq_along(cooks_d),
+  Cooks_D = cooks_d
+) %>%
+  filter(Cooks_D > 4 / nobs(m2))
+
+```
+Diagnostic plots suggested that the assumptions of linear regression were reasonably satisfied overall. The residuals-versus-fitted plot showed no substantial nonlinear pattern, supporting the assumption of linearity. The Q-Q plot indicated approximate normality, although some deviations were observed in the tails. The scale-location plot suggested possible heteroscedasticity, as residual variability appeared to differ across fitted values. Multicollinearity was not a major concern, with VIF values of 1.55 for both predictors. Observation 24 exceeded the Cook's distance screening threshold (D = 0.173), suggesting potential influence. Overall, these findings provide reasonable support for M2, although possible heteroscedasticity and the influential observation warrant some caution when interpreting the results.
+
+## 6. Reporting preferred model
+
+M2 was selected as the preferred model because it provided the highest adjusted R² (.686) and a relatively low RMSE (6.467) while maintaining a parsimonious specification. Compared with M1, the addition of learning opportunities increased explained variance by 2.67 percentage points and modestly improved prediction accuracy, although the improvement was not statistically significant (p = .135). M3 provided virtually no additional explanatory benefit and introduced unnecessary complexity. Despite minor concerns identified during diagnostic evaluation, M2 offers a reasonable balance between explanatory power, simplicity, and substantive interpretability.
+
+```{r}
+m2_coefficients <- tidy(
+  m2,
+  conf.int = TRUE,
+  conf.level = 0.95
+)
+
+m2_coefficients
+
+m2_coefficients %>%
+  mutate(
+    p_display = if_else(
+      p.value < 0.001,
+      "< .001",
+      sprintf("%.3f", p.value)
+    )
+  ) %>%
+  select(
+    term, estimate, std.error,
+    conf.low, conf.high, p_display
+  ) %>%
+  gt() %>%
+  tab_header(
+    title = "Regression Coefficients for M2"
+  ) %>%
+  cols_label(
+    term = "Predictor",
+    estimate = "Estimate (b)",
+    std.error = "SE",
+    conf.low = "95% CI Lower",
+    conf.high = "95% CI Upper",
+    p_display = "p-value"
+  ) %>%
+  fmt_number(
+    columns = c(
+      estimate, std.error,
+      conf.low, conf.high
+    ),
+    decimals = 3
+  )
+
+complaints_coef <- m2_coefficients %>%
+  filter(term == "complaints")
+
+learning_coef <- m2_coefficients %>%
+  filter(term == "learning")
+
+fmt3 <- function(x) sprintf("%.3f", x)
+
+fmt_p <- function(p) {
+  ifelse(p < 0.001, "< .001",
+         paste0("= ", fmt3(p)))
+}
+
+m2_stats <- model_performance %>%
+  filter(Model == "M2")
+
+m2_stats
+
+```
+
+
+Holding learning opportunities constant, a one-unit increase in complaint handling was associated with a `r fmt3(complaints_coef$estimate)`-unit increase in overall workplace ratings (95% CI [`r fmt3(complaints_coef$conf.low)`, `r fmt3(complaints_coef$conf.high)`], *p* `r fmt_p(complaints_coef$p.value)`). This positive association was statistically significant, and the confidence interval excluded zero.
+
+Holding complaint handling constant, a one-unit increase in learning opportunities was associated with a `r fmt3(learning_coef$estimate)`-unit increase in workplace ratings (95% CI [`r fmt3(learning_coef$conf.low)`, `r fmt3(learning_coef$conf.high)`], *p* `r fmt_p(learning_coef$p.value)`). However, this association was not statistically significant, and the confidence interval included zero, indicating uncertainty about the unique contribution of learning opportunities.
+
+
+The preferred model (M2) explained `r sprintf("%.1f", m2_stats$R2 * 100)`% of the variance in overall workplace ratings (R² = `r fmt3(m2_stats$R2)`). The adjusted R² was `r fmt3(m2_stats$Adjusted_R2)`, indicating that the model maintained substantial explanatory power after accounting for the number of predictors. The RMSE was `r fmt3(m2_stats$RMSE)`, indicating a typical prediction error magnitude of approximately `r fmt3(m2_stats$RMSE)` rating points, measured using root mean squared error. Overall, the model demonstrated reasonably strong explanatory performance.
+
+
+The results suggest that complaint handling is the strongest predictor of overall workplace ratings among the three variables examined. Complaint handling alone explained approximately 68.1% of the variance in workplace ratings. Learning opportunities explained an additional 2.7% of variance, although this improvement was not statistically significant. Pay increases contributed virtually no additional explanatory power after accounting for complaint handling and learning opportunities. These findings suggest that employees' perceptions of how complaints are handled may be more strongly associated with overall workplace evaluations than opportunities for learning or pay increases.
+
+However, several limitations should be considered. First, the dataset contains only 30 departments, limiting statistical power and the generalizability of the findings. Second, because the data are observational and aggregated at the department level, causal conclusions cannot be drawn, and the findings may not reflect relationships at the individual employee level. Third, the diagnostic analysis identified potential heteroscedasticity and an influential observation, which may affect the reliability of the regression estimates. Future research using larger samples and additional workplace variables could provide a more comprehensive understanding of factors associated with workplace ratings.
+
+
+## AI Disclosure Statement
+
+This lab was completed with assistance from ChatGPT to generate and amend R and Quarto code, check the report against the lab requirements, and draft portions of the discussion of the results. I personally reviewed and checked all code, results, and written content. 
